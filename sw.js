@@ -1,5 +1,5 @@
 // ĐỔI số version khi bạn deploy để ép cập nhật cache
-const CACHE_NAME = "map-viewer-v50";
+const CACHE_NAME = "map-viewer-v51";
 const PRECACHE_URLS = [
   "./",
   "index.html",

@@ -52,7 +52,7 @@
 
   <div id="map"></div>
 
-  <!-- Libs (đúng file JS markercluster!) -->
+  <!-- Libs (CHÍNH XÁC tên file markercluster) -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
@@ -126,13 +126,12 @@
 
     function makePopup(lat, lon){
       const url = buildExternalNavLink(lat, lon);
-      const disabled = myLoc ? '' : 'disabled title="Bấm 📍 lấy vị trí trước"';
       return `
         <div style="min-width:220px">
           <b>Điểm đến</b><br>Lat: ${fmt(lat)}<br>Lon: ${fmt(lon)}
           <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap">
             <a href="${url}" target="_blank" rel="noopener"><button>🧭 Chỉ đường</button></a>
-            <button class="btn-ghost preview-route" data-lat="${lat}" data-lon="${lon}" ${disabled}>👀 Xem trước</button>
+            <button class="btn-ghost preview-route" data-lat="${lat}" data-lon="${lon}">👀 Xem trước</button>
           </div>
         </div>`;
     }
@@ -190,26 +189,17 @@
           .bindPopup(`Bạn đang ở đây<br>Lat: ${fmt(latitude)}<br>Lon: ${fmt(longitude)}<br>±${Math.round(accuracy||0)}m`).openPopup();
         if (accuracy) myCircle = L.circle([latitude, longitude], {radius:accuracy, color:'#2563eb', fillColor:'#60a5fa', fillOpacity:0.15}).addTo(map);
         map.setView([latitude, longitude], 15);
-
-        // Bật nút 👀 cho popup đang mở (nếu có)
-        const p = map._popup;
-        if (p && p.getLatLng){ const ll = p.getLatLng(); p.setContent(makePopup(ll.lat, ll.lng)); p.update(); }
       }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
 
-    // Luôn re-render nội dung popup + gắn listener nút 👀 mỗi lần popup mở
-    map && map.on('popupopen', (ev) => {
-      const { lat, lng } = ev.popup.getLatLng();
-      ev.popup.setContent(makePopup(lat, lng));
-      ev.popup.update();
-      const btn = ev.popup.getElement().querySelector('.preview-route');
-      if (btn){
-        btn.addEventListener('click', () => {
-          const dlat = parseFloat(btn.getAttribute('data-lat'));
-          const dlon = parseFloat(btn.getAttribute('data-lon'));
-          previewRouteTo(dlat, dlon, btn);
-        }, { once: true });
-      }
+    // 🔥 EVENT DELEGATION: nút 👀 luôn bắt được click, không sợ popup render lại
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.preview-route');
+      if (!btn) return;
+      const dlat = parseFloat(btn.dataset.lat);
+      const dlon = parseFloat(btn.dataset.lon);
+      if (Number.isNaN(dlat) || Number.isNaN(dlon)) { alert('Thiếu toạ độ điểm đến.'); return; }
+      previewRouteTo(dlat, dlon, btn);
     });
 
     // Đổi app điều hướng ⇒ cập nhật popup đang mở
