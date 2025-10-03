@@ -77,6 +77,7 @@
     }
     function fmt(n){ return Number(n).toFixed(6); }
 
+    // Parser: hỗ trợ dấu phẩy/chấm và mọi kiểu phân tách
     function parseCoordText(s){
       if (s==null) return null;
       const m = String(s).trim().match(/-?\d+(?:[.,]\d+)?/g);
@@ -143,13 +144,18 @@
         const p = parseCoordText(row[pickCol]);
         if (p) pts.push(p); else bad++;
       }
+
       markers = L.markerClusterGroup();
       pts.forEach(([la,lo]) => {
-        const m = L.marker([la,lo]);
+        // bindPopup NGAY khi tạo marker
+        const m = L.marker([la,lo]).bindPopup(makePopup(la,lo));
         m.on('popupopen', (ev) => {
+          // Mỗi lần mở, cập nhật content theo trạng thái hiện tại
           const { lat, lng } = ev.popup.getLatLng();
           ev.popup.setContent(makePopup(lat, lng));
           ev.popup.update();
+
+          // Gắn handler cho nút 👀 nếu có
           const btn = ev.popup.getElement().querySelector('.preview-route');
           if (btn){
             btn.addEventListener('click', () => {
@@ -169,7 +175,7 @@
     }
 
     async function loadCSV(){
-      const url = `data/toado.csv?t=${Date.now()}`;
+      const url = `data/toado.csv?t=${Date.now()}`; // luôn lấy mới
       const text = await fetch(url, {cache:"no-store"}).then(r=>{
         if (!r.ok) throw new Error("Không tải được data/toado.csv");
         return r.text();
@@ -179,7 +185,8 @@
       render();
     }
 
-    document.getElementById('btnReload').addEventListener('click', () => { loadCSV(); });
+    document.getElementById('btnReload').addEventListener('click', loadCSV);
+
     document.getElementById('btnMyLoc').addEventListener('click', ()=>{
       if (!navigator.geolocation){ alert('Trình duyệt không hỗ trợ định vị.'); return; }
       navigator.geolocation.getCurrentPosition((pos)=>{
@@ -194,18 +201,24 @@
       }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
 
-    previewToggle.addEventListener('change', () => {
+    // Khi đổi tuỳ chọn preview hoặc app dẫn đường: cập nhật popup đang mở
+    function refreshOpenPopup(){
       ensureRoutingCleared();
       const p = map._popup;
       if (p && p.getLatLng){
         const ll = p.getLatLng();
-        p.setContent(makePopup(ll.lat, ll.lng)); p.update();
+        p.setContent(makePopup(ll.lat, ll.lng));
+        p.update();
       }
-    });
+    }
+    previewToggle.addEventListener('change', refreshOpenPopup);
+    navPref.addEventListener('change', refreshOpenPopup);
 
+    // Init
     initMap();
     loadCSV().catch(e=> statBox.textContent = e.message);
 
+    // SW (nếu cần ép cập nhật, đổi version trong sw.js và thêm ?v=xx ở URL)
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
   </script>
 </body>
