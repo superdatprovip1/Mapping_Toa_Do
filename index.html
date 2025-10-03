@@ -29,7 +29,7 @@
     .stats { font-size:12px; color:#111; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#f1f5f9; font-size:12px; }
     .btn-ghost { background:#f8fafc; color:#111; border-color:#e5e7eb; }
-    .btn-ghost[disabled] { opacity: .6; cursor: not-allowed; }
+    .btn-ghost[disabled] { opacity:.6; cursor:not-allowed; }
   </style>
 </head>
 <body>
@@ -52,7 +52,7 @@
 
   <div id="map"></div>
 
-  <!-- Libs -->
+  <!-- Libs (đúng file JS markercluster!) -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
@@ -72,10 +72,10 @@
         {maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'}).addTo(map);
       map.setView([16.047,108.206],5);
     }
-    function fmt(n){ return Number(n).toFixed(6); }
+    const fmt = n => Number(n).toFixed(6);
 
     function parseCoordText(s){
-      if (s==null) return null;
+      if (!s) return null;
       const m = String(s).trim().match(/-?\d+(?:[.,]\d+)?/g);
       if (!m || m.length<2) return null;
       const la = parseFloat(m[0].replace(',','.'));
@@ -96,18 +96,32 @@
     function ensureRoutingCleared(){
       if (routingCtrl){ map.removeControl(routingCtrl); routingCtrl=null; }
     }
-    function previewRouteTo(destLat, destLon){
+
+    function previewRouteTo(destLat, destLon, btnEl){
+      if (!L.Routing || !L.Routing.control){
+        alert('Chưa tải xong thư viện dẫn đường. Đợi 1–2 giây rồi thử lại.');
+        return;
+      }
+      if (!myLoc){
+        alert('Hãy bấm "📍 Lấy vị trí của tôi" trước khi xem trước lộ trình.');
+        return;
+      }
+      if (btnEl){ btnEl.disabled = true; btnEl.textContent = '⏳ Đang tính...'; }
+
       ensureRoutingCleared();
-      if (!myLoc){ alert('Hãy bấm "📍 Lấy vị trí của tôi" trước khi xem trước lộ trình.'); return; }
       routingCtrl = L.Routing.control({
         waypoints: [ L.latLng(myLoc.lat, myLoc.lon), L.latLng(destLat, destLon) ],
-        routeWhileDragging: false,
-        addWaypoints: false,
-        collapsible: true,
-        showAlternatives: false,
-        fitSelectedRoutes: true,
+        addWaypoints: false, routeWhileDragging: false, collapsible: true,
+        showAlternatives: false, fitSelectedRoutes: true,
         router: L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' })
-      }).addTo(map);
+      })
+      .on('routesfound', () => { if (btnEl){ btnEl.disabled=false; btnEl.textContent='👀 Xem trước'; } })
+      .on('routingerror', () => {
+        if (btnEl){ btnEl.disabled=false; btnEl.textContent='👀 Xem trước'; }
+        alert('Không tìm được lộ trình. Thử lại sau hoặc kiểm tra mạng.');
+        ensureRoutingCleared();
+      })
+      .addTo(map);
     }
 
     function makePopup(lat, lon){
@@ -138,20 +152,22 @@
         const p = parseCoordText(row[pickCol]);
         if (p) pts.push(p); else bad++;
       }
+
       markers = L.markerClusterGroup();
       pts.forEach(([la,lo]) => {
-        const m = L.marker([la,lo]).bindPopup(makePopup(la,lo), { closeButton: true, autoPan: true });
+        const m = L.marker([la,lo]).bindPopup(makePopup(la,lo), { closeButton:true, autoPan:true });
         markers.addLayer(m);
       });
       map.addLayer(markers);
 
       heatLayer = L.heatLayer(pts.map(p=>[p[0],p[1],0.6]), {radius:18, blur:16, maxZoom:17}).addTo(map);
+
       if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding:[20,20]});
       statBox.innerHTML = `<b>Điểm hợp lệ:</b> ${pts.length} · <b>Sai định dạng:</b> ${bad} · <span class="pill">Cột dùng: ${pickCol||'-'}</span>`;
     }
 
     async function loadCSV(){
-      const url = `data/toado.csv?t=${Date.now()}`;
+      const url = `data/toado.csv?t=${Date.now()}`; // luôn mới
       const text = await fetch(url, {cache:"no-store"}).then(r=>{
         if (!r.ok) throw new Error("Không tải được data/toado.csv");
         return r.text();
@@ -174,31 +190,38 @@
           .bindPopup(`Bạn đang ở đây<br>Lat: ${fmt(latitude)}<br>Lon: ${fmt(longitude)}<br>±${Math.round(accuracy||0)}m`).openPopup();
         if (accuracy) myCircle = L.circle([latitude, longitude], {radius:accuracy, color:'#2563eb', fillColor:'#60a5fa', fillOpacity:0.15}).addTo(map);
         map.setView([latitude, longitude], 15);
+
+        // Bật nút 👀 cho popup đang mở (nếu có)
+        const p = map._popup;
+        if (p && p.getLatLng){ const ll = p.getLatLng(); p.setContent(makePopup(ll.lat, ll.lng)); p.update(); }
       }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
 
+    // Luôn re-render nội dung popup + gắn listener nút 👀 mỗi lần popup mở
     map && map.on('popupopen', (ev) => {
+      const { lat, lng } = ev.popup.getLatLng();
+      ev.popup.setContent(makePopup(lat, lng));
+      ev.popup.update();
       const btn = ev.popup.getElement().querySelector('.preview-route');
       if (btn){
         btn.addEventListener('click', () => {
           const dlat = parseFloat(btn.getAttribute('data-lat'));
           const dlon = parseFloat(btn.getAttribute('data-lon'));
-          previewRouteTo(dlat, dlon);
+          previewRouteTo(dlat, dlon, btn);
         }, { once: true });
       }
     });
 
+    // Đổi app điều hướng ⇒ cập nhật popup đang mở
     navPref.addEventListener('change', () => {
       const p = map._popup;
-      if (p && p.getLatLng){
-        const ll = p.getLatLng();
-        p.setContent(makePopup(ll.lat, ll.lng)); p.update();
-      }
+      if (p && p.getLatLng){ const ll = p.getLatLng(); p.setContent(makePopup(ll.lat, ll.lng)); p.update(); }
     });
 
     initMap();
     loadCSV().catch(e=> statBox.textContent = e.message);
 
+    // SW
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
   </script>
 </body>
