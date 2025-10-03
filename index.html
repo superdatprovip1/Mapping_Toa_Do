@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Toa Do → Map Viewer (Autoload + Preview Route + PWA)</title>
+  <title>Toa Do → Map Viewer (Autoload + Search + Preview Route + PWA)</title>
 
   <!-- PWA -->
   <link rel="manifest" href="manifest.json">
@@ -22,10 +22,11 @@
     :root { --pad: 10px; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
     #toolbar { position:sticky; top:0; z-index:1000; background:white; padding: var(--pad); display:flex; flex-wrap: wrap; gap:10px; align-items:end; box-shadow: 0 1px 0 rgba(0,0,0,.08); }
-    #map { position: absolute; top: 140px; bottom: 0; left: 0; right: 0; }
+    #map { position: absolute; top: 180px; bottom: 0; left: 0; right: 0; }
     .card { border:1px solid #e6e6e6; border-radius: 10px; padding: 10px; }
     button, select { padding:8px 10px; border-radius:8px; border:1px solid #d0d7de; font-size: 13px; background:#111827; color:#fff; cursor:pointer; }
     select { background:#111827; color:#fff; }
+    input[type="text"] { padding:8px 10px; border-radius:8px; border:1px solid #d0d7de; font-size:13px; min-width: 260px; }
     .stats { font-size:12px; color:#111; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#f1f5f9; font-size:12px; }
     .btn-ghost { background:#f8fafc; color:#111; border-color:#e5e7eb; }
@@ -41,6 +42,17 @@
       <div id="statBox" class="stats"></div>
       <div id="abBox" class="stats" style="margin-top:6px;"></div>
     </div>
+
+    <!-- 🔎 Ô tìm kiếm -->
+    <div class="card">
+      <label for="searchInput" style="font-size:12px;color:#333;display:block;margin-bottom:6px">Tìm điểm theo mã/ID (ví dụ: VN0365888127)</label>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <input type="text" id="searchInput" placeholder="Nhập mã cần tìm..." />
+        <button id="btnSearch">🔎 Tìm</button>
+      </div>
+      <div id="searchMsg" class="stats" style="margin-top:6px;"></div>
+    </div>
+
     <div class="card">
       <button id="btnReload">🔄 Tải lại dữ liệu</button>
       <button id="btnMyLoc">📍 Lấy vị trí của tôi</button>
@@ -69,8 +81,15 @@
     const statBox = document.getElementById('statBox');
     const abBox   = document.getElementById('abBox');
     const navPref = document.getElementById('navPref');
+    const searchInput = document.getElementById('searchInput');
+    const searchMsg = document.getElementById('searchMsg');
+
     const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
     let myLoc = null;
+
+    // Lưu tên cột toạ độ được dùng & index marker
+    let pickColName = null;
+    const markerIndex = new Map(); // key: "lat,lng" -> marker
 
     function initMap(){
       map = L.map('map', { tap: true });
@@ -137,7 +156,7 @@
       .addTo(map);
     }
 
-    // ---- NEW: Auto chọn 2 marker -> vẽ route & hiện khoảng cách
+    // ---- Auto chọn 2 marker -> vẽ route & hiện khoảng cách
     function fmtDistance(m){
       if (m < 1000) return `${Math.round(m)} m`;
       return `${(m/1000).toFixed(2)} km`;
@@ -145,18 +164,16 @@
     function selectPoint(lat, lon){
       if (selectedPoints.length >= 2) ensureABCleared();
       selectedPoints.push([lat, lon]);
-      // highlight vòng tròn nhỏ để người dùng thấy đã chọn
       const c = L.circleMarker([lat,lon], {radius:10, color:'#ef4444', weight:2, fillColor:'#fecaca', fillOpacity:0.4});
       c.addTo(map); selectedHighlights.push(c);
 
       if (selectedPoints.length === 2) {
-        // vẽ route A->B
         if (!L.Routing || !L.Routing.control){
           alert('Thư viện dẫn đường chưa sẵn sàng. Thử lại sau giây lát.');
           ensureABCleared();
           return;
         }
-        if (routingCtrl) ensureRoutingCleared(); // clear route "myLoc -> điểm"
+        if (routingCtrl) ensureRoutingCleared();
         abRoutingCtrl = L.Routing.control({
           waypoints: [
             L.latLng(selectedPoints[0][0], selectedPoints[0][1]),
@@ -176,11 +193,9 @@
         })
         .addTo(map);
       } else {
-        // mới chọn 1 điểm: báo A đã chọn
         abBox.innerHTML = `<span class="pill pill-green">Đã chọn điểm A. Hãy chọn tiếp điểm B.</span>`;
       }
     }
-    // ------------------------------------
 
     function makePopup(lat, lon){
       const url = buildExternalNavLink(lat, lon);
@@ -199,32 +214,108 @@
       if (heatLayer){ map.removeLayer(heatLayer); heatLayer=null; }
       ensureRoutingCleared();
       ensureABCleared();
+      markerIndex.clear();
     }
 
     function render(){
       clearLayers();
       const cols = table.length? Object.keys(table[0]) : [];
-      const pickCol = cols.find(c => parseCoordText(table[0][c])) || cols[0];
+      pickColName = cols.find(c => parseCoordText(table[0][c])) || cols[0];
+
       let pts=[], bad=0;
       for (const row of table){
-        const p = parseCoordText(row[pickCol]);
-        if (p) pts.push(p); else bad++;
+        const p = parseCoordText(row[pickColName]);
+        if (p) pts.push({lat:p[0], lon:p[1], row}); else bad++;
       }
 
       markers = L.markerClusterGroup();
-      pts.forEach(([la,lo]) => {
-        const m = L.marker([la,lo]).bindPopup(makePopup(la,lo), { closeButton:true, autoPan:true });
-        // 🔥 Auto-chọn 2 marker: click trên marker để thêm vào cặp A/B
+      pts.forEach(({lat,lon,row}) => {
+        const m = L.marker([lat,lon]).bindPopup(makePopup(lat,lon), { closeButton:true, autoPan:true });
+        // Auto chọn 2 marker
         m.on('click', (ev) => { selectPoint(ev.latlng.lat, ev.latlng.lng); });
         markers.addLayer(m);
+        // Index để search: key theo lat,lng
+        markerIndex.set(`${fmt(lat)},${fmt(lon)}`, m);
       });
       map.addLayer(markers);
 
-      heatLayer = L.heatLayer(pts.map(p=>[p[0],p[1],0.6]), {radius:18, blur:16, maxZoom:17}).addTo(map);
+      heatLayer = L.heatLayer(pts.map(p=>[p.lat,p.lon,0.6]), {radius:18, blur:16, maxZoom:17}).addTo(map);
 
-      if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding:[20,20]});
-      statBox.innerHTML = `<b>Điểm hợp lệ:</b> ${pts.length} · <b>Sai định dạng:</b> ${bad} · <span class="pill">Cột dùng: ${pickCol||'-'}</span>`;
+      if (pts.length) map.fitBounds(L.latLngBounds(pts.map(p=>[p.lat,p.lon])), {padding:[20,20]});
+      statBox.innerHTML = `<b>Điểm hợp lệ:</b> ${pts.length} · <b>Sai định dạng:</b> ${bad} · <span class="pill">Cột toạ độ: ${pickColName||'-'}</span>`;
     }
+
+    // ---------- SEARCH ----------
+    function normalize(s){ return String(s||'').trim().toLowerCase(); }
+
+    function findPointsByQuery(q){
+      if (!q) return [];
+      const cols = table.length? Object.keys(table[0]) : [];
+      // cột dữ liệu để search: tất cả cột - cột toạ độ
+      const searchCols = cols.filter(c => c !== pickColName);
+      const qn = normalize(q);
+
+      // Ưu tiên khớp EXACT trước, nếu không có thì SUBSTRING
+      const matchesExact = [];
+      const matchesSub = [];
+
+      for (const row of table){
+        const coord = parseCoordText(row[pickColName]);
+        if (!coord) continue;
+        for (const c of searchCols){
+          const val = normalize(row[c]);
+          if (!val) continue;
+          if (val === qn) { matchesExact.push({lat:coord[0], lon:coord[1], row}); break; }
+          if (val.includes(qn)) { matchesSub.push({lat:coord[0], lon:coord[1], row}); }
+        }
+      }
+      return matchesExact.length ? matchesExact : matchesSub;
+    }
+
+    function zoomToMarker(lat, lon){
+      const key = `${fmt(lat)},${fmt(lon)}`;
+      const m = markerIndex.get(key);
+      if (m){
+        markers.zoomToShowLayer(m, () => {
+          m.openPopup();
+          map.setView([lat, lon], Math.max(map.getZoom(), 15));
+        });
+      } else {
+        // fallback
+        map.setView([lat, lon], 15);
+      }
+    }
+
+    function handleSearch(){
+      const q = searchInput.value;
+      searchMsg.textContent = '';
+      if (!q.trim()){
+        searchMsg.textContent = 'Nhập mã/ID cần tìm (ví dụ: VN0365888127).';
+        return;
+      }
+      const found = findPointsByQuery(q);
+      if (!found.length){
+        searchMsg.textContent = 'Không tìm thấy kết quả.';
+        return;
+      }
+      if (found.length === 1){
+        const {lat, lon} = found[0];
+        zoomToMarker(lat, lon);
+        searchMsg.innerHTML = `<span class="pill">Tìm thấy 1 kết quả.</span>`;
+      } else {
+        const bounds = L.latLngBounds(found.map(p => [p.lat, p.lon]));
+        map.fitBounds(bounds, {padding:[20,20]});
+        // mở popup của kết quả đầu
+        zoomToMarker(found[0].lat, found[0].lon);
+        searchMsg.innerHTML = `<span class="pill">Tìm thấy ${found.length} kết quả. Zoom tới vùng chứa tất cả.</span>`;
+      }
+    }
+
+    document.getElementById('btnSearch').addEventListener('click', handleSearch);
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleSearch();
+    });
+    // -----------------------------
 
     async function loadCSV(){
       const url = `data/toado.csv?t=${Date.now()}`; // luôn mới
@@ -263,7 +354,7 @@
       previewRouteTo(dlat, dlon, btn);
     });
 
-    // Đổi app điều hướng ⇒ cập nhật popup đang mở (chỉ ảnh hưởng link “Chỉ đường”)
+    // Đổi app điều hướng ⇒ cập nhật popup đang mở (ảnh hưởng link “Chỉ đường”)
     navPref.addEventListener('change', () => {
       const p = map._popup;
       if (p && p.getLatLng){ const ll = p.getLatLng(); p.setContent(makePopup(ll.lat, ll.lng)); p.update(); }
