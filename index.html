@@ -22,7 +22,7 @@
     :root { --pad: 10px; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
     #toolbar { position:sticky; top:0; z-index:1000; background:white; padding: var(--pad); display:flex; flex-wrap: wrap; gap:10px; align-items:end; box-shadow: 0 1px 0 rgba(0,0,0,.08); }
-    #map { position: absolute; top: 120px; bottom: 0; left: 0; right: 0; }
+    #map { position: absolute; top: 140px; bottom: 0; left: 0; right: 0; }
     .card { border:1px solid #e6e6e6; border-radius: 10px; padding: 10px; }
     button, select { padding:8px 10px; border-radius:8px; border:1px solid #d0d7de; font-size: 13px; background:#111827; color:#fff; cursor:pointer; }
     select { background:#111827; color:#fff; }
@@ -30,6 +30,8 @@
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#f1f5f9; font-size:12px; }
     .btn-ghost { background:#f8fafc; color:#111; border-color:#e5e7eb; }
     .btn-ghost[disabled] { opacity:.6; cursor:not-allowed; }
+    .pill-green { background:#e6fbe6; color:#036703; }
+    .pill-blue  { background:#eef4ff; color:#173ea5; }
   </style>
 </head>
 <body>
@@ -37,6 +39,7 @@
     <div class="card">
       <div><b>Dữ liệu autoload từ:</b> <code>data/toado.csv</code></div>
       <div id="statBox" class="stats"></div>
+      <div id="abBox" class="stats" style="margin-top:6px;"></div>
     </div>
     <div class="card">
       <button id="btnReload">🔄 Tải lại dữ liệu</button>
@@ -52,7 +55,7 @@
 
   <div id="map"></div>
 
-  <!-- Libs (CHÍNH XÁC tên file markercluster) -->
+  <!-- Libs -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
@@ -61,7 +64,10 @@
 
   <script>
     let map, markers, heatLayer, myMarker, myCircle, routingCtrl=null, table=[];
+    // AB (two-point) routing state
+    let abRoutingCtrl=null, selectedPoints=[], selectedHighlights=[];
     const statBox = document.getElementById('statBox');
+    const abBox   = document.getElementById('abBox');
     const navPref = document.getElementById('navPref');
     const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
     let myLoc = null;
@@ -96,6 +102,13 @@
     function ensureRoutingCleared(){
       if (routingCtrl){ map.removeControl(routingCtrl); routingCtrl=null; }
     }
+    function ensureABCleared(){
+      if (abRoutingCtrl){ map.removeControl(abRoutingCtrl); abRoutingCtrl=null; }
+      selectedPoints = [];
+      selectedHighlights.forEach(h => map.removeLayer(h));
+      selectedHighlights = [];
+      abBox.innerHTML = '';
+    }
 
     function previewRouteTo(destLat, destLon, btnEl){
       if (!L.Routing || !L.Routing.control){
@@ -124,6 +137,51 @@
       .addTo(map);
     }
 
+    // ---- NEW: Auto chọn 2 marker -> vẽ route & hiện khoảng cách
+    function fmtDistance(m){
+      if (m < 1000) return `${Math.round(m)} m`;
+      return `${(m/1000).toFixed(2)} km`;
+    }
+    function selectPoint(lat, lon){
+      if (selectedPoints.length >= 2) ensureABCleared();
+      selectedPoints.push([lat, lon]);
+      // highlight vòng tròn nhỏ để người dùng thấy đã chọn
+      const c = L.circleMarker([lat,lon], {radius:10, color:'#ef4444', weight:2, fillColor:'#fecaca', fillOpacity:0.4});
+      c.addTo(map); selectedHighlights.push(c);
+
+      if (selectedPoints.length === 2) {
+        // vẽ route A->B
+        if (!L.Routing || !L.Routing.control){
+          alert('Thư viện dẫn đường chưa sẵn sàng. Thử lại sau giây lát.');
+          ensureABCleared();
+          return;
+        }
+        if (routingCtrl) ensureRoutingCleared(); // clear route "myLoc -> điểm"
+        abRoutingCtrl = L.Routing.control({
+          waypoints: [
+            L.latLng(selectedPoints[0][0], selectedPoints[0][1]),
+            L.latLng(selectedPoints[1][0], selectedPoints[1][1])
+          ],
+          addWaypoints:false, showAlternatives:false, routeWhileDragging:false,
+          collapsible:true, fitSelectedRoutes:true,
+          router: L.Routing.osrmv1({ serviceUrl:'https://router.project-osrm.org/route/v1' })
+        })
+        .on('routesfound', (e) => {
+          const r = e.routes[0];
+          abBox.innerHTML = `<span class="pill pill-blue"><b>A↔B:</b> ${fmtDistance(r.summary.totalDistance)}</span>`;
+        })
+        .on('routingerror', () => {
+          alert('Không tìm được lộ trình giữa 2 điểm này.');
+          ensureABCleared();
+        })
+        .addTo(map);
+      } else {
+        // mới chọn 1 điểm: báo A đã chọn
+        abBox.innerHTML = `<span class="pill pill-green">Đã chọn điểm A. Hãy chọn tiếp điểm B.</span>`;
+      }
+    }
+    // ------------------------------------
+
     function makePopup(lat, lon){
       const url = buildExternalNavLink(lat, lon);
       return `
@@ -140,6 +198,7 @@
       if (markers){ map.removeLayer(markers); markers=null; }
       if (heatLayer){ map.removeLayer(heatLayer); heatLayer=null; }
       ensureRoutingCleared();
+      ensureABCleared();
     }
 
     function render(){
@@ -155,6 +214,8 @@
       markers = L.markerClusterGroup();
       pts.forEach(([la,lo]) => {
         const m = L.marker([la,lo]).bindPopup(makePopup(la,lo), { closeButton:true, autoPan:true });
+        // 🔥 Auto-chọn 2 marker: click trên marker để thêm vào cặp A/B
+        m.on('click', (ev) => { selectPoint(ev.latlng.lat, ev.latlng.lng); });
         markers.addLayer(m);
       });
       map.addLayer(markers);
@@ -192,7 +253,7 @@
       }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
 
-    // 🔥 EVENT DELEGATION: nút 👀 luôn bắt được click, không sợ popup render lại
+    // Event delegation cho nút 👀 (vị trí tôi -> điểm)
     document.addEventListener('click', (e) => {
       const btn = e.target.closest('.preview-route');
       if (!btn) return;
@@ -202,7 +263,7 @@
       previewRouteTo(dlat, dlon, btn);
     });
 
-    // Đổi app điều hướng ⇒ cập nhật popup đang mở
+    // Đổi app điều hướng ⇒ cập nhật popup đang mở (chỉ ảnh hưởng link “Chỉ đường”)
     navPref.addEventListener('change', () => {
       const p = map._popup;
       if (p && p.getLatLng){ const ll = p.getLatLng(); p.setContent(makePopup(ll.lat, ll.lng)); p.update(); }
