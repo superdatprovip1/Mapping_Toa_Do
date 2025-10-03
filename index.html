@@ -16,7 +16,6 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
-  <!-- Routing preview -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"/>
 
   <style>
@@ -48,7 +47,7 @@
         <option value="osm">OpenStreetMap</option>
       </select>
       <label class="toggle">
-        <input type="checkbox" id="previewToggle" style="margin-right:6px"> Xem trước lộ trình
+        <input type="checkbox" id="previewToggle" checked style="margin-right:6px"> Xem trước lộ trình
       </label>
     </div>
   </div>
@@ -60,7 +59,6 @@
   <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <!-- Routing preview -->
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
   <script>
@@ -79,7 +77,6 @@
     }
     function fmt(n){ return Number(n).toFixed(6); }
 
-    // Parser chịu dấu phẩy/chấm và mọi loại phân tách
     function parseCoordText(s){
       if (s==null) return null;
       const m = String(s).trim().match(/-?\d+(?:[.,]\d+)?/g);
@@ -148,8 +145,11 @@
       }
       markers = L.markerClusterGroup();
       pts.forEach(([la,lo]) => {
-        const m = L.marker([la,lo]).bindPopup(makePopup(la,lo));
+        const m = L.marker([la,lo]);
         m.on('popupopen', (ev) => {
+          const { lat, lng } = ev.popup.getLatLng();
+          ev.popup.setContent(makePopup(lat, lng));
+          ev.popup.update();
           const btn = ev.popup.getElement().querySelector('.preview-route');
           if (btn){
             btn.addEventListener('click', () => {
@@ -169,7 +169,7 @@
     }
 
     async function loadCSV(){
-      const url = `data/toado.csv?t=${Date.now()}`; // luôn lấy mới
+      const url = `data/toado.csv?t=${Date.now()}`;
       const text = await fetch(url, {cache:"no-store"}).then(r=>{
         if (!r.ok) throw new Error("Không tải được data/toado.csv");
         return r.text();
@@ -194,7 +194,6 @@
       }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
 
-    // Khi đổi tuỳ chọn preview, cập nhật popup đang mở
     previewToggle.addEventListener('change', () => {
       ensureRoutingCleared();
       const p = map._popup;
@@ -207,7 +206,6 @@
     initMap();
     loadCSV().catch(e=> statBox.textContent = e.message);
 
-    // SW
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
   </script>
 </body>
