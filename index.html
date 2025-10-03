@@ -22,13 +22,14 @@
     :root { --pad: 10px; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
     #toolbar { position:sticky; top:0; z-index:1000; background:white; padding: var(--pad); display:flex; flex-wrap: wrap; gap:10px; align-items:end; box-shadow: 0 1px 0 rgba(0,0,0,.08); }
-    #map { position: absolute; top: 140px; bottom: 0; left: 0; right: 0; }
+    #map { position: absolute; top: 120px; bottom: 0; left: 0; right: 0; }
     .card { border:1px solid #e6e6e6; border-radius: 10px; padding: 10px; }
-    button, select, label.toggle { padding:8px 10px; border-radius:8px; border:1px solid #d0d7de; font-size: 13px; background:#111827; color:#fff; cursor:pointer; }
+    button, select { padding:8px 10px; border-radius:8px; border:1px solid #d0d7de; font-size: 13px; background:#111827; color:#fff; cursor:pointer; }
     select { background:#111827; color:#fff; }
     .stats { font-size:12px; color:#111; }
     .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#f1f5f9; font-size:12px; }
     .btn-ghost { background:#f8fafc; color:#111; border-color:#e5e7eb; }
+    .btn-ghost[disabled] { opacity: .6; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -46,9 +47,6 @@
         <option value="apple">Apple Maps</option>
         <option value="osm">OpenStreetMap</option>
       </select>
-      <label class="toggle">
-        <input type="checkbox" id="previewToggle" checked style="margin-right:6px"> Xem trước lộ trình
-      </label>
     </div>
   </div>
 
@@ -56,7 +54,7 @@
 
   <!-- Libs -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.js"></script>
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
@@ -65,12 +63,11 @@
     let map, markers, heatLayer, myMarker, myCircle, routingCtrl=null, table=[];
     const statBox = document.getElementById('statBox');
     const navPref = document.getElementById('navPref');
-    const previewToggle = document.getElementById('previewToggle');
     const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
     let myLoc = null;
 
     function initMap(){
-      map = L.map('map');
+      map = L.map('map', { tap: true });
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
         {maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'}).addTo(map);
       map.setView([16.047,108.206],5);
@@ -116,15 +113,13 @@
 
     function makePopup(lat, lon){
       const url = buildExternalNavLink(lat, lon);
-      const btnPreview = previewToggle.checked
-        ? `<button class="btn-ghost preview-route" data-lat="${lat}" data-lon="${lon}" style="margin-left:6px">👀 Xem trước</button>`
-        : '';
+      const disabled = myLoc ? '' : 'disabled title="Bấm 📍 lấy vị trí trước"';
       return `
         <div style="min-width:220px">
           <b>Điểm đến</b><br>Lat: ${fmt(lat)}<br>Lon: ${fmt(lon)}
-          <div style="margin-top:8px">
+          <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap">
             <a href="${url}" target="_blank" rel="noopener"><button>🧭 Chỉ đường</button></a>
-            ${btnPreview}
+            <button class="btn-ghost preview-route" data-lat="${lat}" data-lon="${lon}" ${disabled}>👀 Xem trước</button>
           </div>
         </div>`;
     }
@@ -145,32 +140,19 @@
         if (p) pts.push(p); else bad++;
       }
 
+      // Markers + popup
       markers = L.markerClusterGroup();
       pts.forEach(([la,lo]) => {
-        // bindPopup NGAY khi tạo marker
-        const m = L.marker([la,lo]).bindPopup(makePopup(la,lo));
-        m.on('popupopen', (ev) => {
-          // Mỗi lần mở, cập nhật content theo trạng thái hiện tại
-          const { lat, lng } = ev.popup.getLatLng();
-          ev.popup.setContent(makePopup(lat, lng));
-          ev.popup.update();
-
-          // Gắn handler cho nút 👀 nếu có
-          const btn = ev.popup.getElement().querySelector('.preview-route');
-          if (btn){
-            btn.addEventListener('click', () => {
-              const dlat = parseFloat(btn.getAttribute('data-lat'));
-              const dlon = parseFloat(btn.getAttribute('data-lon'));
-              previewRouteTo(dlat, dlon);
-            });
-          }
-        });
+        const m = L.marker([la,lo]).bindPopup(makePopup(la,lo), { closeButton: true, autoPan: true });
         markers.addLayer(m);
       });
       map.addLayer(markers);
 
+      // Heatmap
       heatLayer = L.heatLayer(pts.map(p=>[p[0],p[1],0.6]), {radius:18, blur:16, maxZoom:17}).addTo(map);
+
       if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding:[20,20]});
+
       statBox.innerHTML = `<b>Điểm hợp lệ:</b> ${pts.length} · <b>Sai định dạng:</b> ${bad} · <span class="pill">Cột dùng: ${pickCol||'-'}</span>`;
     }
 
@@ -198,27 +180,46 @@
           .bindPopup(`Bạn đang ở đây<br>Lat: ${fmt(latitude)}<br>Lon: ${fmt(longitude)}<br>±${Math.round(accuracy||0)}m`).openPopup();
         if (accuracy) myCircle = L.circle([latitude, longitude], {radius:accuracy, color:'#2563eb', fillColor:'#60a5fa', fillOpacity:0.15}).addTo(map);
         map.setView([latitude, longitude], 15);
+
+        // Cập nhật lại nội dung popup đang mở (để nút 👀 hết disabled)
+        const p = map._popup;
+        if (p && p.getLatLng){
+          const ll = p.getLatLng();
+          p.setContent(makePopup(ll.lat, ll.lng)); p.update();
+        }
       }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
 
-    // Khi đổi tuỳ chọn preview hoặc app dẫn đường: cập nhật popup đang mở
-    function refreshOpenPopup(){
-      ensureRoutingCleared();
+    // Handler toàn cục: mỗi lần mở popup thì cập nhật nội dung + gắn click 👀
+    map && map.on('popupopen', (ev) => {
+      const { lat, lng } = ev.popup.getLatLng();
+      ev.popup.setContent(makePopup(lat, lng));
+      ev.popup.update();
+
+      const btn = ev.popup.getElement().querySelector('.preview-route');
+      if (btn){
+        btn.addEventListener('click', () => {
+          const dlat = parseFloat(btn.getAttribute('data-lat'));
+          const dlon = parseFloat(btn.getAttribute('data-lon'));
+          previewRouteTo(dlat, dlon);
+        }, { once: true });
+      }
+    });
+
+    // Đổi app điều hướng ⇒ cập nhật popup đang mở
+    navPref.addEventListener('change', () => {
       const p = map._popup;
       if (p && p.getLatLng){
         const ll = p.getLatLng();
-        p.setContent(makePopup(ll.lat, ll.lng));
-        p.update();
+        p.setContent(makePopup(ll.lat, ll.lng)); p.update();
       }
-    }
-    previewToggle.addEventListener('change', refreshOpenPopup);
-    navPref.addEventListener('change', refreshOpenPopup);
+    });
 
     // Init
     initMap();
     loadCSV().catch(e=> statBox.textContent = e.message);
 
-    // SW (nếu cần ép cập nhật, đổi version trong sw.js và thêm ?v=xx ở URL)
+    // SW
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
   </script>
 </body>
