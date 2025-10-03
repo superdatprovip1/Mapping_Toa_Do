@@ -14,8 +14,8 @@
 
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"/>
 
   <style>
@@ -54,7 +54,7 @@
 
   <!-- Libs -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
   <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
@@ -74,7 +74,6 @@
     }
     function fmt(n){ return Number(n).toFixed(6); }
 
-    // Parser: hỗ trợ dấu phẩy/chấm và mọi kiểu phân tách
     function parseCoordText(s){
       if (s==null) return null;
       const m = String(s).trim().match(/-?\d+(?:[.,]\d+)?/g);
@@ -139,8 +138,6 @@
         const p = parseCoordText(row[pickCol]);
         if (p) pts.push(p); else bad++;
       }
-
-      // Markers + popup
       markers = L.markerClusterGroup();
       pts.forEach(([la,lo]) => {
         const m = L.marker([la,lo]).bindPopup(makePopup(la,lo), { closeButton: true, autoPan: true });
@@ -148,16 +145,13 @@
       });
       map.addLayer(markers);
 
-      // Heatmap
       heatLayer = L.heatLayer(pts.map(p=>[p[0],p[1],0.6]), {radius:18, blur:16, maxZoom:17}).addTo(map);
-
       if (pts.length) map.fitBounds(L.latLngBounds(pts), {padding:[20,20]});
-
       statBox.innerHTML = `<b>Điểm hợp lệ:</b> ${pts.length} · <b>Sai định dạng:</b> ${bad} · <span class="pill">Cột dùng: ${pickCol||'-'}</span>`;
     }
 
     async function loadCSV(){
-      const url = `data/toado.csv?t=${Date.now()}`; // luôn lấy mới
+      const url = `data/toado.csv?t=${Date.now()}`;
       const text = await fetch(url, {cache:"no-store"}).then(r=>{
         if (!r.ok) throw new Error("Không tải được data/toado.csv");
         return r.text();
@@ -180,22 +174,10 @@
           .bindPopup(`Bạn đang ở đây<br>Lat: ${fmt(latitude)}<br>Lon: ${fmt(longitude)}<br>±${Math.round(accuracy||0)}m`).openPopup();
         if (accuracy) myCircle = L.circle([latitude, longitude], {radius:accuracy, color:'#2563eb', fillColor:'#60a5fa', fillOpacity:0.15}).addTo(map);
         map.setView([latitude, longitude], 15);
-
-        // Cập nhật lại nội dung popup đang mở (để nút 👀 hết disabled)
-        const p = map._popup;
-        if (p && p.getLatLng){
-          const ll = p.getLatLng();
-          p.setContent(makePopup(ll.lat, ll.lng)); p.update();
-        }
       }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
     });
 
-    // Handler toàn cục: mỗi lần mở popup thì cập nhật nội dung + gắn click 👀
     map && map.on('popupopen', (ev) => {
-      const { lat, lng } = ev.popup.getLatLng();
-      ev.popup.setContent(makePopup(lat, lng));
-      ev.popup.update();
-
       const btn = ev.popup.getElement().querySelector('.preview-route');
       if (btn){
         btn.addEventListener('click', () => {
@@ -206,7 +188,6 @@
       }
     });
 
-    // Đổi app điều hướng ⇒ cập nhật popup đang mở
     navPref.addEventListener('change', () => {
       const p = map._popup;
       if (p && p.getLatLng){
@@ -215,11 +196,9 @@
       }
     });
 
-    // Init
     initMap();
     loadCSV().catch(e=> statBox.textContent = e.message);
 
-    // SW
     if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
   </script>
 </body>
