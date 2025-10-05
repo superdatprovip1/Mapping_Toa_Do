@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Toa Do → Map Viewer (Autoload + Search + Preview Route + PWA)</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#111827">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css"/>
+
+  <style>
+    :root { --pad: 10px; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #toolbar { position:sticky; top:0; z-index:1000; background:white; padding: var(--pad); display:flex; flex-wrap: wrap; gap:10px; align-items:end; box-shadow: 0 1px 0 rgba(0,0,0,.08); }
+    #map { position: absolute; top: 180px; bottom: 0; left: 0; right: 0; }
+    .card { border:1px solid #e6e6e6; border-radius: 10px; padding: 10px; }
+    button, select { padding:8px 10px; border-radius:8px; border:1px solid #d0d7de; font-size: 13px; background:#111827; color:#fff; cursor:pointer; }
+    select { background:#111827; color:#fff; }
+    input[type="text"] { padding:8px 10px; border-radius:8px; border:1px solid #d0d7de; font-size:13px; min-width: 260px; }
+    .stats { font-size:12px; color:#111; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#f1f5f9; font-size:12px; }
+    .btn-ghost { background:#f8fafc; color:#111; border-color:#e5e7eb; }
+    .btn-ghost[disabled] { opacity:.6; cursor:not-allowed; }
+    .pill-green { background:#e6fbe6; color:#036703; }
+    .pill-blue  { background:#eef4ff; color:#173ea5; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <div class="card">
+      <!-- đổi dòng mô tả nguồn dữ liệu -->
+      <div><b>Dữ liệu autoload từ:</b> <code>Cloudflare Worker API</code></div>
+      <div id="statBox" class="stats"></div>
+      <div id="abBox" class="stats" style="margin-top:6px;"></div>
+    </div>
+
+    <!-- 🔎 Ô tìm kiếm -->
+    <div class="card">
+      <label for="searchInput" style="font-size:12px;color:#333;display:block;margin-bottom:6px">Tìm điểm theo mã/ID (ví dụ: VN0365888127)</label>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <input type="text" id="searchInput" placeholder="Nhập mã cần tìm..." />
+        <button id="btnSearch">🔎 Tìm</button>
+      </div>
+      <div id="searchMsg" class="stats" style="margin-top:6px;"></div>
+    </div>
+
+    <div class="card">
+      <button id="btnReload">🔄 Tải lại dữ liệu</button>
+      <button id="btnMyLoc">📍 Lấy vị trí của tôi</button>
+      <select id="navPref">
+        <option value="auto">Tự động (iOS→Apple, Android→Google)</option>
+        <option value="google">Google Maps</option>
+        <option value="apple">Apple Maps</option>
+        <option value="osm">OpenStreetMap</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- Libs -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+
+  <script>
+    // ====== THÊM: URL API Worker của bạn ======
+    const API_URL = 'https://mapping-api.superdatprovip1.workers.dev/api/addresses';
+
+    let map, markers, heatLayer, myMarker, myCircle, routingCtrl=null, table=[];
+    // AB (two-point) routing state
+    let abRoutingCtrl=null, selectedPoints=[], selectedHighlights=[];
+    const statBox = document.getElementById('statBox');
+    const abBox   = document.getElementById('abBox');
+    const navPref = document.getElementById('navPref');
+    const searchInput = document.getElementById('searchInput');
+    const searchMsg = document.getElementById('searchMsg');
+
+    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+    let myLoc = null;
+
+    // Lưu tên cột toạ độ được dùng & index marker
+    let pickColName = null;
+    const markerIndex = new Map(); // key: "lat,lng" -> marker
+
+    function initMap(){
+      map = L.map('map', { tap: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        {maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'}).addTo(map);
+      map.setView([16.047,108.206],5);
+    }
+    const fmt = n => Number(n).toFixed(6);
+
+    function parseCoordText(s){
+      if (!s) return null;
+      const m = String(s).trim().match(/-?\d+(?:[.,]\d+)?/g);
+      if (!m || m.length<2) return null;
+      const la = parseFloat(m[0].replace(',','.'));
+      const lo = parseFloat(m[1].replace(',','.'));
+      if (Number.isNaN(la)||Number.isNaN(lo)) return null;
+      if (la<-90||la>90||lo<-180||lo>180) return null;
+      return [la,lo];
+    }
+
+    function buildExternalNavLink(lat, lon){
+      const choice = navPref.value==='auto' ? (isIOS?'apple':'google') : navPref.value;
+      const d = `${fmt(lat)},${fmt(lon)}`;
+      if (choice==='google') return `https://www.google.com/maps/dir/?api=1&destination=${d}`;
+      if (choice==='apple')  return `https://maps.apple.com/?daddr=${d}&dirflg=d`;
+      return `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&to=${d}`;
+    }
+
+    function ensureRoutingCleared(){
+      if (routingCtrl){ map.removeControl(routingCtrl); routingCtrl=null; }
+    }
+    function ensureABCleared(){
+      if (abRoutingCtrl){ map.removeControl(abRoutingCtrl); abRoutingCtrl=null; }
+      selectedPoints = [];
+      selectedHighlights.forEach(h => map.removeLayer(h));
+      selectedHighlights = [];
+      abBox.innerHTML = '';
+    }
+
+    function previewRouteTo(destLat, destLon, btnEl){
+      if (!L.Routing || !L.Routing.control){
+        alert('Chưa tải xong thư viện dẫn đường. Đợi 1–2 giây rồi thử lại.');
+        return;
+      }
+      if (!myLoc){
+        alert('Hãy bấm "📍 Lấy vị trí của tôi" trước khi xem trước lộ trình.');
+        return;
+      }
+      if (btnEl){ btnEl.disabled = true; btnEl.textContent = '⏳ Đang tính...'; }
+
+      ensureRoutingCleared();
+      routingCtrl = L.Routing.control({
+        waypoints: [ L.latLng(myLoc.lat, myLoc.lon), L.latLng(destLat, destLon) ],
+        addWaypoints: false, routeWhileDragging: false, collapsible: true,
+        showAlternatives: false, fitSelectedRoutes: true,
+        router: L.Routing.osrmv1({ serviceUrl: 'https://router.project-osrm.org/route/v1' })
+      })
+      .on('routesfound', () => { if (btnEl){ btnEl.disabled=false; btnEl.textContent='👀 Xem trước'; } })
+      .on('routingerror', () => {
+        if (btnEl){ btnEl.disabled=false; btnEl.textContent='👀 Xem trước'; }
+        alert('Không tìm được lộ trình. Thử lại sau hoặc kiểm tra mạng.');
+        ensureRoutingCleared();
+      })
+      .addTo(map);
+    }
+
+    // ---- Auto chọn 2 marker -> vẽ route & hiện khoảng cách
+    function fmtDistance(m){
+      if (m < 1000) return `${Math.round(m)} m`;
+      return `${(m/1000).toFixed(2)} km`;
+    }
+    function selectPoint(lat, lon){
+      if (selectedPoints.length >= 2) ensureABCleared();
+      selectedPoints.push([lat, lon]);
+      const c = L.circleMarker([lat,lon], {radius:10, color:'#ef4444', weight:2, fillColor:'#fecaca', fillOpacity:0.4});
+      c.addTo(map); selectedHighlights.push(c);
+
+      if (selectedPoints.length === 2) {
+        if (!L.Routing || !L.Routing.control){
+          alert('Thư viện dẫn đường chưa sẵn sàng. Thử lại sau giây lát.');
+          ensureABCleared();
+          return;
+        }
+        if (routingCtrl) ensureRoutingCleared();
+        abRoutingCtrl = L.Routing.control({
+          waypoints: [
+            L.latLng(selectedPoints[0][0], selectedPoints[0][1]),
+            L.latLng(selectedPoints[1][0], selectedPoints[1][1])
+          ],
+          addWaypoints:false, showAlternatives:false, routeWhileDragging:false,
+          collapsible:true, fitSelectedRoutes:true,
+          router: L.Routing.osrmv1({ serviceUrl:'https://router.project-osrm.org/route/v1' })
+        })
+        .on('routesfound', (e) => {
+          const r = e.routes[0];
+          abBox.innerHTML = `<span class="pill pill-blue"><b>A↔B:</b> ${fmtDistance(r.summary.totalDistance)}</span>`;
+        })
+        .on('routingerror', () => {
+          alert('Không tìm được lộ trình giữa 2 điểm này.');
+          ensureABCleared();
+        })
+        .addTo(map);
+      } else {
+        abBox.innerHTML = `<span class="pill pill-green">Đã chọn điểm A. Hãy chọn tiếp điểm B.</span>`;
+      }
+    }
+
+    function makePopup(lat, lon){
+      const url = buildExternalNavLink(lat, lon);
+      return `
+        <div style="min-width:220px">
+          <b>Điểm đến</b><br>Lat: ${fmt(lat)}<br>Lon: ${fmt(lon)}
+          <div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap">
+            <a href="${url}" target="_blank" rel="noopener"><button>🧭 Chỉ đường</button></a>
+            <button class="btn-ghost preview-route" data-lat="${lat}" data-lon="${lon}">👀 Xem trước</button>
+          </div>
+        </div>`;
+    }
+
+    function clearLayers(){
+      if (markers){ map.removeLayer(markers); markers=null; }
+      if (heatLayer){ map.removeLayer(heatLayer); heatLayer=null; }
+      ensureRoutingCleared();
+      ensureABCleared();
+      markerIndex.clear();
+    }
+
+    function render(){
+      clearLayers();
+      const cols = table.length? Object.keys(table[0]) : [];
+      pickColName = cols.find(c => parseCoordText(table[0][c])) || cols[0];
+
+      let pts=[], bad=0;
+      for (const row of table){
+        const p = parseCoordText(row[pickColName]);
+        if (p) pts.push({lat:p[0], lon:p[1], row}); else bad++;
+      }
+
+      markers = L.markerClusterGroup();
+      pts.forEach(({lat,lon,row}) => {
+        const m = L.marker([lat,lon]).bindPopup(makePopup(lat,lon), { closeButton:true, autoPan:true });
+        // Auto chọn 2 marker
+        m.on('click', (ev) => { selectPoint(ev.latlng.lat, ev.latlng.lng); });
+        markers.addLayer(m);
+        // Index để search: key theo lat,lng
+        markerIndex.set(`${fmt(lat)},${fmt(lon)}`, m);
+      });
+      map.addLayer(markers);
+
+      heatLayer = L.heatLayer(pts.map(p=>[p.lat,p.lon,0.6]), {radius:18, blur:16, maxZoom:17}).addTo(map);
+
+      if (pts.length) map.fitBounds(L.latLngBounds(pts.map(p=>[p.lat,p.lon])), {padding:[20,20]});
+      statBox.innerHTML = `<b>Điểm hợp lệ:</b> ${pts.length} · <b>Sai định dạng:</b> ${bad} · <span class="pill">Cột toạ độ: ${pickColName||'-'}</span>`;
+    }
+
+    // ---------- SEARCH ----------
+    function normalize(s){ return String(s||'').trim().toLowerCase(); }
+
+    function findPointsByQuery(q){
+      if (!q) return [];
+      const cols = table.length? Object.keys(table[0]) : [];
+      // cột dữ liệu để search: tất cả cột - cột toạ độ
+      const searchCols = cols.filter(c => c !== pickColName);
+      const qn = normalize(q);
+
+      // Ưu tiên khớp EXACT trước, nếu không có thì SUBSTRING
+      const matchesExact = [];
+      const matchesSub = [];
+
+      for (const row of table){
+        const coord = parseCoordText(row[pickColName]);
+        if (!coord) continue;
+        for (const c of searchCols){
+          const val = normalize(row[c]);
+          if (!val) continue;
+          if (val === qn) { matchesExact.push({lat:coord[0], lon:coord[1], row}); break; }
+          if (val.includes(qn)) { matchesSub.push({lat:coord[0], lon:coord[1], row}); }
+        }
+      }
+      return matchesExact.length ? matchesExact : matchesSub;
+    }
+
+    function zoomToMarker(lat, lon){
+      const key = `${fmt(lat)},${fmt(lon)}`;
+      const m = markerIndex.get(key);
+      if (m){
+        markers.zoomToShowLayer(m, () => {
+          m.openPopup();
+          map.setView([lat, lon], Math.max(map.getZoom(), 15));
+        });
+      } else {
+        // fallback
+        map.setView([lat, lon], 15);
+      }
+    }
+
+    function handleSearch(){
+      const q = searchInput.value;
+      searchMsg.textContent = '';
+      if (!q.trim()){
+        searchMsg.textContent = 'Nhập mã/ID cần tìm (ví dụ: VN0365888127).';
+        return;
+      }
+      const found = findPointsByQuery(q);
+      if (!found.length){
+        searchMsg.textContent = 'Không tìm thấy kết quả.';
+        return;
+      }
+      if (found.length === 1){
+        const {lat, lon} = found[0];
+        zoomToMarker(lat, lon);
+        searchMsg.innerHTML = `<span class="pill">Tìm thấy 1 kết quả.</span>`;
+      } else {
+        const bounds = L.latLngBounds(found.map(p => [p.lat, p.lon]));
+        map.fitBounds(bounds, {padding:[20,20]});
+        // mở popup của kết quả đầu
+        zoomToMarker(found[0].lat, found[0].lon);
+        searchMsg.innerHTML = `<span class="pill">Tìm thấy ${found.length} kết quả. Zoom tới vùng chứa tất cả.</span>`;
+      }
+    }
+
+    document.getElementById('btnSearch').addEventListener('click', handleSearch);
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleSearch();
+    });
+    // -----------------------------
+
+    // ====== SỬA: load dữ liệu qua API Worker ======
+    async function loadCSV(){
+      const url = `${API_URL}?t=${Date.now()}`; // tránh cache
+      const resp = await fetch(url, { cache: "no-store" });
+      if (!resp.ok) throw new Error("Không tải được dữ liệu từ API");
+
+      const text = await resp.text(); // Worker trả CSV
+      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+      table = parsed.data;
+      render();
+    }
+
+    document.getElementById('btnReload').addEventListener('click', loadCSV);
+
+    document.getElementById('btnMyLoc').addEventListener('click', ()=>{
+      if (!navigator.geolocation){ alert('Trình duyệt không hỗ trợ định vị.'); return; }
+      navigator.geolocation.getCurrentPosition((pos)=>{
+        const {latitude, longitude, accuracy} = pos.coords;
+        myLoc = {lat: latitude, lon: longitude};
+        if (myMarker) map.removeLayer(myMarker);
+        if (myCircle) map.removeLayer(myCircle);
+        myMarker = L.marker([latitude, longitude]).addTo(map)
+          .bindPopup(`Bạn đang ở đây<br>Lat: ${fmt(latitude)}<br>Lon: ${fmt(longitude)}<br>±${Math.round(accuracy||0)}m`).openPopup();
+        if (accuracy) myCircle = L.circle([latitude, longitude], {radius:accuracy, color:'#2563eb', fillColor:'#60a5fa', fillOpacity:0.15}).addTo(map);
+        map.setView([latitude, longitude], 15);
+      }, (err)=>alert('Không lấy được vị trí: '+err.message), {enableHighAccuracy:true, timeout:15000, maximumAge:0});
+    });
+
+    // Event delegation cho nút 👀 (vị trí tôi -> điểm)
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.preview-route');
+      if (!btn) return;
+      const dlat = parseFloat(btn.dataset.lat);
+      const dlon = parseFloat(btn.dataset.lon);
+      if (Number.isNaN(dlat) || Number.isNaN(dlon)) { alert('Thiếu toạ độ điểm đến.'); return; }
+      previewRouteTo(dlat, dlon, btn);
+    });
+
+    // Đổi app điều hướng ⇒ cập nhật popup đang mở (ảnh hưởng link “Chỉ đường”)
+    navPref.addEventListener('change', () => {
+      const p = map._popup;
+      if (p && p.getLatLng){ const ll = p.getLatLng(); p.setContent(makePopup(ll.lat, ll.lng)); p.update(); }
+    });
+
+    initMap();
+    loadCSV().catch(e=> statBox.textContent = e.message);
+
+    // SW
+    if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+  </script>
+</body>
+</html>
