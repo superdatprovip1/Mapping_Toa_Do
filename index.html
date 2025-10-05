@@ -38,7 +38,8 @@
 <body>
   <div id="toolbar">
     <div class="card">
-      <div><b>Dữ liệu autoload từ:</b> <code>data/toado.csv</code></div>
+      <!-- đổi dòng mô tả nguồn dữ liệu -->
+      <div><b>Dữ liệu autoload từ:</b> <code>Cloudflare Worker API</code></div>
       <div id="statBox" class="stats"></div>
       <div id="abBox" class="stats" style="margin-top:6px;"></div>
     </div>
@@ -75,6 +76,9 @@
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
   <script>
+    // ====== THÊM: URL API Worker của bạn ======
+    const API_URL = 'https://mapping-api.superdatprovip1.workers.dev/api/addresses';
+
     let map, markers, heatLayer, myMarker, myCircle, routingCtrl=null, table=[];
     // AB (two-point) routing state
     let abRoutingCtrl=null, selectedPoints=[], selectedHighlights=[];
@@ -317,13 +321,14 @@
     });
     // -----------------------------
 
+    // ====== SỬA: load dữ liệu qua API Worker ======
     async function loadCSV(){
-      const url = `data/toado.csv?t=${Date.now()}`; // luôn mới
-      const text = await fetch(url, {cache:"no-store"}).then(r=>{
-        if (!r.ok) throw new Error("Không tải được data/toado.csv");
-        return r.text();
-      });
-      const parsed = Papa.parse(text, {header:true, skipEmptyLines:true});
+      const url = `${API_URL}?t=${Date.now()}`; // tránh cache
+      const resp = await fetch(url, { cache: "no-store" });
+      if (!resp.ok) throw new Error("Không tải được dữ liệu từ API");
+
+      const text = await resp.text(); // Worker trả CSV
+      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
       table = parsed.data;
       render();
     }
